@@ -32,9 +32,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	pb "github.com/golang/groupcache/groupcachepb"
-	"github.com/golang/groupcache/lru"
-	"github.com/golang/groupcache/singleflight"
+	pb "github.com/ccheers/groupcache/api/v1"
+	"github.com/ccheers/groupcache/internal/lru"
+	"golang.org/x/sync/singleflight"
 )
 
 // A Getter loads data for a key.
@@ -177,8 +177,8 @@ type Group struct {
 // satisfies.  We define this so that we may test with an alternate
 // implementation.
 type flightGroup interface {
-	// Done is called when Do is done.
-	Do(key string, fn func() (interface{}, error)) (interface{}, error)
+	// Do Done is called when Do is done.
+	Do(key string, fn func() (interface{}, error)) (interface{}, error, bool)
 }
 
 // Stats are per-group statistics.
@@ -222,7 +222,6 @@ func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
 	// track of whether the dest was already populated. One caller
 	// (if local) will set this; the losers will not. The common
 	// case will likely be one caller.
-	destPopulated := false
 	value, destPopulated, err := g.load(ctx, key, dest)
 	if err != nil {
 		return err
@@ -234,9 +233,10 @@ func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
 }
 
 // load loads key either by invoking the getter locally or by sending it to another machine.
-func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView, destPopulated bool, err error) {
+func (g *Group) load(ctx context.Context, key string, dest Sink) (ByteView, bool, error) {
+	var err error
 	g.Stats.Loads.Add(1)
-	viewi, err := g.loadGroup.Do(key, func() (interface{}, error) {
+	viewi, err, shared := g.loadGroup.Do(key, func() (interface{}, error) {
 		// Check the cache again because singleflight can only dedup calls
 		// that overlap concurrently.  It's possible for 2 concurrent
 		// requests to miss the cache, resulting in 2 load() calls.  An
@@ -283,14 +283,13 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 			return nil, err
 		}
 		g.Stats.LocalLoads.Add(1)
-		destPopulated = true // only one caller of load gets this return value
 		g.populateCache(key, value, &g.mainCache)
 		return value, nil
 	})
-	if err == nil {
-		value = viewi.(ByteView)
+	if err != nil {
+		return ByteView{}, false, err
 	}
-	return
+	return viewi.(ByteView), !shared, nil
 }
 
 func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView, error) {
@@ -303,8 +302,8 @@ func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView
 
 func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
 	req := &pb.GetRequest{
-		Group: &g.name,
-		Key:   &key,
+		Group: g.name,
+		Key:   key,
 	}
 	res := &pb.GetResponse{}
 	err := peer.Get(ctx, req, res)

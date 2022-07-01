@@ -30,10 +30,10 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ccheers/groupcache/internal/testpb"
 	"github.com/golang/protobuf/proto"
 
-	pb "github.com/golang/groupcache/groupcachepb"
-	testpb "github.com/golang/groupcache/testpb"
+	pb "github.com/ccheers/groupcache/api/v1"
 )
 
 var (
@@ -375,7 +375,7 @@ type orderedFlightGroup struct {
 	orig   flightGroup
 }
 
-func (g *orderedFlightGroup) Do(key string, fn func() (interface{}, error)) (interface{}, error) {
+func (g *orderedFlightGroup) Do(key string, fn func() (interface{}, error)) (interface{}, error, bool) {
 	<-g.stage1
 	<-g.stage2
 	g.mu.Lock()
